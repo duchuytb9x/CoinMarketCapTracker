@@ -310,6 +310,123 @@
         max-height: none;
       }
     }
+
+    @media (max-width: 700px) {
+      .app {
+        width: 100%;
+        padding: 10px 10px 24px;
+      }
+
+      header {
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+
+      h1 {
+        font-size: 22px;
+      }
+
+      .grid {
+        gap: 10px;
+      }
+
+      .settings,
+      .toolbar {
+        padding: 12px;
+      }
+
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .metric {
+        min-width: 0;
+        padding: 8px;
+      }
+
+      .metric strong {
+        font-size: 14px;
+      }
+
+      .table-wrap {
+        overflow: visible;
+        padding: 10px;
+        background: #f8fafc;
+      }
+
+      table,
+      thead,
+      tbody,
+      tr,
+      td {
+        display: block;
+        width: 100%;
+        min-width: 0;
+      }
+
+      table {
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+      }
+
+      tbody tr {
+        margin-bottom: 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        overflow: hidden;
+      }
+
+      tbody tr:hover {
+        background: #fff;
+      }
+
+      td {
+        display: grid;
+        grid-template-columns: minmax(118px, 42%) minmax(0, 1fr);
+        gap: 10px;
+        align-items: center;
+        min-height: 38px;
+        padding: 9px 10px;
+        border-bottom: 1px solid var(--line);
+        white-space: normal;
+        word-break: break-word;
+      }
+
+      td:last-child {
+        border-bottom: 0;
+      }
+
+      td::before {
+        content: attr(data-label);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      td.num {
+        text-align: left;
+      }
+
+      td.empty {
+        display: block;
+        padding: 24px 12px;
+      }
+
+      td.empty::before {
+        content: none;
+      }
+    }
   </style>
 </head>
 <body>
@@ -577,17 +694,17 @@ ETH</textarea>
 
       rowsEl.innerHTML = rows.map(row => `
         <tr>
-          <td><strong>${escapeHtml(row.symbol)}</strong></td>
-          <td>${escapeHtml(row.name)}</td>
-          <td class="num">${row.price === null ? '' : money(row.price, convert)}</td>
-          <td class="num">${row.marketCap === null ? '' : money(row.marketCap, convert)}</td>
-          <td class="num">${row.volume24h === null ? '' : money(row.volume24h, convert)}</td>
-          <td class="num">${percent(row.percent1h)}</td>
-          <td class="num">${percent(row.percent24h)}</td>
-          <td class="num">${percent(row.percent7d)}</td>
-          <td>${escapeHtml(dateTime(row.lastUpdated))}</td>
-          <td><span class="badge ${row.status === 'Error' ? 'error' : ''}">${escapeHtml(row.status)}</span></td>
-          <td>${escapeHtml(row.error)}</td>
+          <td data-label="Symbol"><strong>${escapeHtml(row.symbol)}</strong></td>
+          <td data-label="Name">${escapeHtml(row.name)}</td>
+          <td data-label="Price" class="num">${row.price === null ? '' : money(row.price, convert)}</td>
+          <td data-label="Market Cap" class="num">${row.marketCap === null ? '' : money(row.marketCap, convert)}</td>
+          <td data-label="Volume 24h" class="num">${row.volume24h === null ? '' : money(row.volume24h, convert)}</td>
+          <td data-label="Change 1h" class="num">${percent(row.percent1h)}</td>
+          <td data-label="Change 24h" class="num">${percent(row.percent24h)}</td>
+          <td data-label="Change 7d" class="num">${percent(row.percent7d)}</td>
+          <td data-label="Last Updated">${escapeHtml(dateTime(row.lastUpdated))}</td>
+          <td data-label="Status"><span class="badge ${row.status === 'Error' ? 'error' : ''}">${escapeHtml(row.status)}</span></td>
+          <td data-label="Error">${escapeHtml(row.error)}</td>
         </tr>
       `).join('');
     }
