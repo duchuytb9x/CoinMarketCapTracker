@@ -728,6 +728,8 @@ ETH</textarea>
 
   <script>
     const STORAGE_KEY = 'cmc-coin-tracker-settings';
+    const BASE_TITLE = 'CoinMarketCap Coin Tracker';
+    let titleTickerTimer = null;
     const isLocalProxy = ['127.0.0.1', 'localhost'].includes(location.hostname);
     const proxyUrl = String(window.CMC_PROXY_URL || '').trim();
     const proxyRequiresKey = window.CMC_PROXY_REQUIRES_KEY ?? !proxyUrl;
@@ -837,6 +839,34 @@ ETH</textarea>
       });
     }
 
+    function stopTitleTicker(title = BASE_TITLE) {
+      if (titleTickerTimer) {
+        clearInterval(titleTickerTimer);
+        titleTickerTimer = null;
+      }
+      document.title = title;
+    }
+
+    function startTitleTicker(rows, convert) {
+      const text = rows
+        .filter(row => row.status === 'OK' && row.price !== null)
+        .map(row => `${row.symbol} - ${money(row.price, convert)}`)
+        .join(' . ');
+
+      if (!text) {
+        stopTitleTicker();
+        return;
+      }
+
+      const ticker = `${text}   |   `;
+      let offset = 0;
+      stopTitleTicker();
+      document.title = ticker;
+      titleTickerTimer = setInterval(() => {
+        offset = (offset + 1) % ticker.length;
+        document.title = ticker.slice(offset) + ticker.slice(0, offset);
+      }, 350);
+    }
     function percent(value) {
       if (value === null || value === undefined || Number.isNaN(Number(value))) return '';
       const className = Number(value) < 0 ? 'negative' : 'positive';
@@ -1083,29 +1113,34 @@ ETH</textarea>
       updateCoinCount();
 
       if (!settings.apiUrl) {
+        stopTitleTicker();
         statusLineEl.textContent = 'Thiếu CMC_PROXY_URL cho bản GitHub Pages.';
         return;
       }
 
       if (proxyRequiresKey && !settings.apiKey) {
+        stopTitleTicker();
         statusLineEl.textContent = 'Thiếu API_KEY.';
         apiKeyEl.focus();
         return;
       }
 
       if (!symbols.length) {
+        stopTitleTicker();
         renderRows([], settings.convert);
         renderSummary([], settings.convert);
         return;
       }
 
       refreshButton.disabled = true;
+      stopTitleTicker('Loading prices...');
       statusLineEl.textContent = `Đang tải ${symbols.length} symbol...`;
       rowsEl.innerHTML = '<tr><td class="empty" colspan="12">Đang tải dữ liệu từ CoinMarketCap...</td></tr>';
 
       const rows = enrichRows(await Promise.all(symbols.map(symbol => fetchSymbol(symbol, settings))));
       renderRows(rows, settings.convert);
       renderSummary(rows, settings.convert);
+      startTitleTicker(rows, settings.convert);
       statusLineEl.textContent = rows.some(row => row.status === 'Error')
         ? 'Hoàn tất, có symbol lỗi.'
         : 'Hoàn tất.';
