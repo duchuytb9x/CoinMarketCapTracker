@@ -3,11 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CoinMarketCap Coin Tracker</title>
-<script>
-  window.CMC_PROXY_URL = "https://cmctracker.duchuytb9x.workers.dev/";
-  window.CMC_PROXY_REQUIRES_KEY = false;
-</script>
+  <title>Binance Futures Tracker</title>
   <style>
     :root {
       color-scheme: light;
@@ -428,6 +424,47 @@
       color: var(--ok);
     }
 
+    .tick-up,
+    .tick-down {
+      animation: tick-flash 0.9s ease-out;
+    }
+
+    .tick-up {
+      --flash: rgba(20, 122, 75, 0.22);
+    }
+
+    .tick-down {
+      --flash: rgba(214, 79, 58, 0.22);
+    }
+
+    @keyframes tick-flash {
+      from {
+        background: var(--flash);
+      }
+      to {
+        background: transparent;
+      }
+    }
+
+    .live-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      margin-right: 6px;
+      border-radius: 50%;
+      background: var(--muted);
+      vertical-align: 1px;
+    }
+
+    .live-dot.on {
+      background: var(--ok);
+      box-shadow: 0 0 0 3px rgba(20, 122, 75, 0.18);
+    }
+
+    .live-dot.retry {
+      background: var(--warn);
+    }
+
     .empty {
       padding: 42px 18px;
       text-align: center;
@@ -608,26 +645,17 @@
   <main class="app">
     <header>
       <div>
-        <h1>CoinMarketCap Coin Tracker</h1>
+        <h1>Binance Futures Tracker</h1>
       </div>
       <div id="statusLine" class="subtle status-line"></div>
     </header>
 
     <section class="grid">
       <form id="settingsForm" class="panel settings">
-        <div class="field" id="apiKeyField">
-          <label for="apiKey">API_KEY</label>
-          <input id="apiKey" autocomplete="off" spellcheck="false" type="password" placeholder="CoinMarketCap API key">
-        </div>
-
         <div class="field">
-          <label for="convert">CONVERT</label>
-          <input id="convert" autocomplete="off" spellcheck="false" value="USD">
-        </div>
-
-        <div class="field" id="apiUrlField">
-          <label for="apiUrl">API_URL</label>
-          <input id="apiUrl" autocomplete="off" spellcheck="false">
+          <label for="quote">QUOTE</label>
+          <input id="quote" autocomplete="off" spellcheck="false" value="USDT">
+          <div class="helper">Hợp đồng USDⓈ-M perpetual: BTC → BTCUSDT. Có thể nhập thẳng tên hợp đồng (vd 1000PEPEUSDT).</div>
         </div>
 
         <div class="field">
@@ -641,16 +669,16 @@ ETH</textarea>
           <div class="field">
             <label for="alertRules">Smart alerts</label>
             <textarea id="alertRules" class="compact" spellcheck="false" placeholder="BTC price &gt; 70000&#10;ETH change24h &lt; -5"></textarea>
-            <div class="helper">Hỗ trợ: price, change1h, change24h, change7d, volume, marketcap.</div>
+            <div class="helper">Hỗ trợ: price, change1h, change24h, change7d, volume, oi, funding (%).</div>
           </div>
         </div>
 
         <div class="actions">
           <button id="refreshButton" type="submit">Refresh prices</button>
-          <button class="secondary" id="clearButton" type="button" title="Xóa API key và thiết lập đã lưu">X</button>
+          <button class="secondary" id="clearButton" type="button" title="Xóa thiết lập đã lưu">X</button>
         </div>
 
-        <div class="notice" id="runtimeNotice">Để tránh CORS, hãy mở trang qua file proxy server đi kèm thay vì mở HTML trực tiếp.</div>
+        <div class="notice" id="runtimeNotice">Giá realtime qua WebSocket của Binance Futures, không cần API key hay proxy. Open Interest và mốc 1h/7d cập nhật lại mỗi phút.</div>
       </form>
 
       <section class="panel">
@@ -698,13 +726,15 @@ ETH</textarea>
         </div>
 
         <div class="table-wrap">
-          <table aria-label="CoinMarketCap prices">
+          <table aria-label="Binance Futures prices">
             <thead>
               <tr>
                 <th>Symbol</th>
-                <th>Name</th>
+                <th>Contract</th>
                 <th class="num">Price</th>
-                <th class="num">Market Cap</th>
+                <th class="num">Mark Price</th>
+                <th class="num">Funding</th>
+                <th class="num">Open Interest</th>
                 <th class="num">Volume 24h</th>
                 <th class="num">Percent Change 1h</th>
                 <th class="num">Percent Change 24h</th>
@@ -717,7 +747,7 @@ ETH</textarea>
             </thead>
             <tbody id="priceRows">
               <tr>
-                <td class="empty" colspan="12">Bấm Refresh prices để tải dữ liệu.</td>
+                <td class="empty" colspan="14">Bấm Refresh prices để tải dữ liệu.</td>
               </tr>
             </tbody>
           </table>
@@ -728,28 +758,30 @@ ETH</textarea>
 
   <script>
     const STORAGE_KEY = 'cmc-coin-tracker-settings';
-    const BASE_TITLE = 'CoinMarketCap Coin Tracker';
+    const BASE_TITLE = 'Binance Futures Tracker';
+    const API_BASE = 'https://fapi.binance.com';
+    const WS_BASE = 'wss://fstream.binance.com/market/stream';
+    const RENDER_INTERVAL = 500;
+    const REFERENCE_INTERVAL = 60 * 1000;
     let titleTickerTimer = null;
-    const isLocalProxy = ['127.0.0.1', 'localhost'].includes(location.hostname);
-    const proxyUrl = String(window.CMC_PROXY_URL || '').trim();
-    const proxyRequiresKey = window.CMC_PROXY_REQUIRES_KEY ?? !proxyUrl;
+    let liveRows = [];
+    let socket = null;
+    let socketToken = 0;
+    let reconnectTimer = null;
+    let reconnectDelay = 1000;
+    let renderTimer = null;
+    let referenceTimer = null;
+    let liveState = 'off';
+    let lastTickAt = null;
+    const renderedPrices = new Map();
     const defaultSettings = {
-      apiKey: '',
-      convert: 'USD',
-      apiUrl: proxyUrl || (isLocalProxy
-        ? '/api/quotes'
-        : (location.protocol === 'file:'
-        ? 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest'
-        : '')),
+      quote: 'USDT',
       symbols: 'BTC\nAPT\nETH',
       alertRules: ''
     };
 
     const form = document.querySelector('#settingsForm');
-    const apiKeyField = document.querySelector('#apiKeyField');
-    const apiKeyEl = document.querySelector('#apiKey');
-    const convertEl = document.querySelector('#convert');
-    const apiUrlEl = document.querySelector('#apiUrl');
+    const quoteEl = document.querySelector('#quote');
     const symbolsEl = document.querySelector('#symbols');
     const alertRulesEl = document.querySelector('#alertRules');
     const rowsEl = document.querySelector('#priceRows');
@@ -768,32 +800,29 @@ ETH</textarea>
     const clearButton = document.querySelector('#clearButton');
 
     function loadSettings() {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+      let saved = null;
+      try {
+        saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+      } catch {}
       const settings = { ...defaultSettings, ...(saved || {}) };
-      apiKeyField.hidden = !proxyRequiresKey;
-      document.querySelector('#apiUrlField').hidden = location.protocol !== 'file:' && !proxyUrl;
-      if (isLocalProxy && !proxyUrl && settings.apiUrl.includes('pro-api.coinmarketcap.com')) {
-        settings.apiUrl = defaultSettings.apiUrl;
-      }
-      if (proxyUrl) {
-        settings.apiUrl = proxyUrl;
-      }
-      apiKeyEl.value = settings.apiKey;
-      convertEl.value = settings.convert;
-      apiUrlEl.value = settings.apiUrl;
+      quoteEl.value = settings.quote;
       symbolsEl.value = settings.symbols;
       alertRulesEl.value = settings.alertRules || '';
       updateCoinCount();
     }
 
     function saveSettings() {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        apiKey: apiKeyEl.value.trim(),
-        convert: convertEl.value.trim().toUpperCase() || 'USD',
-        apiUrl: apiUrlEl.value.trim() || defaultSettings.apiUrl,
-        symbols: symbolsEl.value,
-        alertRules: alertRulesEl.value
-      }));
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({
+          quote: getQuote(),
+          symbols: symbolsEl.value,
+          alertRules: alertRulesEl.value
+        }));
+      } catch {}
+    }
+
+    function getQuote() {
+      return quoteEl.value.trim().toUpperCase() || 'USDT';
     }
 
     function parseSymbols() {
@@ -809,7 +838,7 @@ ETH</textarea>
         .map(line => line.trim())
         .filter(Boolean)
         .map(line => {
-          const match = line.match(/^([A-Z0-9-]+)\s+(price|change1h|change24h|change7d|volume|marketcap)\s*(>=|<=|>|<|=)\s*(-?\d+(?:\.\d+)?)$/i);
+          const match = line.match(/^([A-Z0-9-]+)\s+(price|change1h|change24h|change7d|volume|oi|funding|marketcap)\s*(>=|<=|>|<|=)\s*(-?\d+(?:\.\d+)?)$/i);
           if (!match) return null;
           return {
             source: line,
@@ -831,10 +860,11 @@ ETH</textarea>
       return new Intl.NumberFormat('en-US', options).format(Number(value));
     }
 
-    function money(value, currency) {
+    // USDT/USDC không phải mã ISO nên format theo USD.
+    function money(value) {
       return number(value, {
         style: 'currency',
-        currency,
+        currency: 'USD',
         maximumFractionDigits: Math.abs(Number(value)) >= 1 ? 2 : 8
       });
     }
@@ -847,30 +877,36 @@ ETH</textarea>
       document.title = title;
     }
 
-    function startTitleTicker(rows, convert) {
-      const text = rows
+    function tickerText() {
+      return liveRows
         .filter(row => row.status === 'OK' && row.price !== null)
-        .map(row => `${row.symbol} - ${money(row.price, convert)}`)
+        .map(row => `${row.symbol} - ${money(row.price)}`)
         .join(' . ');
+    }
 
-      if (!text) {
+    // Mỗi nhịp đọc lại giá mới nhất nên title chạy theo giá realtime.
+    function startTitleTicker() {
+      if (!tickerText()) {
         stopTitleTicker();
         return;
       }
 
-      const ticker = `${text}   |   `;
       let offset = 0;
       stopTitleTicker();
-      document.title = ticker;
+      document.title = `${tickerText()}   |   `;
       titleTickerTimer = setInterval(() => {
+        const text = tickerText();
+        if (!text) return;
+        const ticker = `${text}   |   `;
         offset = (offset + 1) % ticker.length;
         document.title = ticker.slice(offset) + ticker.slice(0, offset);
       }, 350);
     }
-    function percent(value) {
+
+    function percent(value, digits = 4) {
       if (value === null || value === undefined || Number.isNaN(Number(value))) return '';
       const className = Number(value) < 0 ? 'negative' : 'positive';
-      return `<span class="${className}">${number(value, { maximumFractionDigits: 4 })}%</span>`;
+      return `<span class="${className}">${number(value, { maximumFractionDigits: digits })}%</span>`;
     }
 
     function dateTime(value) {
@@ -889,69 +925,252 @@ ETH</textarea>
         .replaceAll("'", '&#039;');
     }
 
-    function buildUrl(baseUrl, symbol, convert) {
-      const url = new URL(baseUrl, window.location.origin);
-      url.searchParams.set('symbol', symbol);
-      url.searchParams.set('convert', convert);
-      return url;
+    async function getJson(path, params = {}) {
+      const url = new URL(path, API_BASE);
+      Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
+      const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(payload?.msg || `HTTP ${response.status}`);
+      }
+      return payload;
     }
 
-    function normalizeCoin(payload, symbol, convert) {
-      const raw = payload?.data?.[symbol];
-      const coin = Array.isArray(raw) ? raw[0] : raw;
-      if (!coin) {
-        throw new Error(payload?.status?.error_message || 'Không có dữ liệu cho symbol này.');
-      }
+    // BTC -> BTCUSDT; coin giá nhỏ trên Binance có tiền tố 1000 (PEPE -> 1000PEPEUSDT).
+    function resolveContract(symbol, quote, tickers) {
+      const candidates = [
+        symbol,
+        `${symbol}${quote}`,
+        `1000${symbol}${quote}`,
+        `10000${symbol}${quote}`,
+        `1000000${symbol}${quote}`,
+        `1M${symbol}${quote}`
+      ];
+      return candidates.find(candidate => tickers.has(candidate)) || null;
+    }
 
-      const quote = coin.quote?.[convert];
-      if (!quote) {
-        throw new Error(`Không có dữ liệu quy đổi ${convert}.`);
-      }
+    // Giá mở cửa của nến đầu tiên bắt đầu từ startTime.
+    async function priceAt(contract, interval, startTime) {
+      const klines = await getJson('/fapi/v1/klines', { symbol: contract, interval, startTime, limit: 1 });
+      return klines?.[0] ? Number(klines[0][1]) : null;
+    }
 
+    function changeFrom(current, past) {
+      if (!past || current === null) return null;
+      return ((current - past) / past) * 100;
+    }
+
+    // Tính lại các chỉ số phụ thuộc giá mỗi khi có tick mới.
+    function recalc(row) {
+      row.percent1h = changeFrom(row.price, row.price1hAgo);
+      row.percent7d = changeFrom(row.price, row.price7dAgo);
+      if (row.openPrice) row.percent24h = changeFrom(row.price, row.openPrice);
+      row.openInterest = row.openInterestQty === null ? null : row.openInterestQty * row.markPrice;
+    }
+
+    async function fetchReferences(contract) {
+      const now = Date.now();
+      const [oi, price1hAgo, price7dAgo] = await Promise.all([
+        getJson('/fapi/v1/openInterest', { symbol: contract }).catch(() => null),
+        priceAt(contract, '1m', now - 60 * 60 * 1000).catch(() => null),
+        priceAt(contract, '15m', now - 7 * 24 * 60 * 60 * 1000).catch(() => null)
+      ]);
       return {
-        symbol: coin.symbol || symbol,
-        name: coin.name || '',
-        price: quote.price,
-        marketCap: quote.market_cap,
-        volume24h: quote.volume_24h,
-        percent1h: quote.percent_change_1h,
-        percent24h: quote.percent_change_24h,
-        percent7d: quote.percent_change_7d,
-        lastUpdated: quote.last_updated || coin.last_updated,
-        status: 'OK',
-        error: ''
+        openInterestQty: oi ? Number(oi.openInterest) : null,
+        price1hAgo,
+        price7dAgo
       };
     }
 
-    async function fetchSymbol(symbol, settings) {
+    function errorRow(symbol, message) {
+      return {
+        symbol,
+        contract: '',
+        price: null,
+        markPrice: null,
+        funding: null,
+        nextFundingTime: null,
+        openInterest: null,
+        openInterestQty: null,
+        openPrice: null,
+        price1hAgo: null,
+        price7dAgo: null,
+        volume24h: null,
+        percent1h: null,
+        percent24h: null,
+        percent7d: null,
+        lastUpdated: '',
+        status: 'Error',
+        error: message
+      };
+    }
+
+    async function fetchSymbol(symbol, quote, tickers, premiums) {
       try {
-        const headers = { 'Accept': 'application/json' };
-        if (settings.apiKey) {
-          headers['X-CMC_PRO_API_KEY'] = settings.apiKey;
+        const contract = resolveContract(symbol, quote, tickers);
+        if (!contract) {
+          throw new Error(`Không có hợp đồng futures ${symbol}${quote} trên Binance.`);
         }
-        const response = await fetch(buildUrl(settings.apiUrl, symbol, settings.convert), {
-          headers
-        });
-        const payload = await response.json().catch(() => null);
-        if (!response.ok || payload?.status?.error_code) {
-          throw new Error(payload?.status?.error_message || `HTTP ${response.status}`);
-        }
-        return normalizeCoin(payload, symbol, settings.convert);
-      } catch (error) {
-        return {
+
+        const ticker = tickers.get(contract);
+        const premium = premiums.get(contract);
+        const price = Number(ticker.lastPrice);
+        const markPrice = premium ? Number(premium.markPrice) : price;
+        const references = await fetchReferences(contract);
+
+        const row = {
           symbol,
-          name: '',
-          price: null,
-          marketCap: null,
-          volume24h: null,
+          contract,
+          price,
+          markPrice,
+          funding: premium ? Number(premium.lastFundingRate) * 100 : null,
+          nextFundingTime: premium?.nextFundingTime || null,
+          openInterest: null,
+          openPrice: Number(ticker.openPrice),
+          ...references,
+          volume24h: Number(ticker.quoteVolume),
           percent1h: null,
-          percent24h: null,
+          percent24h: Number(ticker.priceChangePercent),
           percent7d: null,
-          lastUpdated: '',
-          status: 'Error',
-          error: error.message || String(error)
+          lastUpdated: ticker.closeTime,
+          status: 'OK',
+          error: ''
         };
+        recalc(row);
+        return row;
+      } catch (error) {
+        return errorRow(symbol, error.message || String(error));
       }
+    }
+
+    async function fetchAll(symbols, quote) {
+      const [tickerList, premiumList] = await Promise.all([
+        getJson('/fapi/v1/ticker/24hr'),
+        getJson('/fapi/v1/premiumIndex')
+      ]);
+      const tickers = new Map(tickerList.map(item => [item.symbol, item]));
+      const premiums = new Map(premiumList.map(item => [item.symbol, item]));
+      return Promise.all(symbols.map(symbol => fetchSymbol(symbol, quote, tickers, premiums)));
+    }
+
+    function setLiveState(state) {
+      liveState = state;
+      renderLiveStatus();
+    }
+
+    function renderLiveStatus() {
+      const labels = {
+        live: ['on', 'Live'],
+        connecting: ['retry', 'Đang kết nối realtime...'],
+        retry: ['retry', 'Mất kết nối, đang thử lại...'],
+        off: ['', 'Realtime tắt']
+      };
+      const [dotClass, label] = labels[liveState] || labels.off;
+      const errors = liveRows.filter(row => row.status === 'Error').length;
+      statusLineEl.innerHTML = `<span class="live-dot ${dotClass}"></span>${escapeHtml(label)}${errors ? ` · ${errors} symbol lỗi` : ''}`;
+    }
+
+    function handleLiveMessage(message) {
+      const data = message?.data;
+      const row = data?.s && liveRows.find(item => item.contract === data.s);
+      if (!row) return;
+
+      if (data.e === 'aggTrade') {
+        if (data.T >= row.lastUpdated) {
+          row.price = Number(data.p);
+          row.lastUpdated = data.T;
+        }
+      } else if (data.e === '24hrTicker') {
+        row.openPrice = Number(data.o);
+        row.volume24h = Number(data.q);
+        // Ticker chỉ đẩy mỗi ~2s, không ghi đè giá trade mới hơn.
+        if (data.E >= row.lastUpdated) {
+          row.price = Number(data.c);
+          row.lastUpdated = data.E;
+        }
+      } else if (data.e === 'markPriceUpdate') {
+        row.markPrice = Number(data.p);
+        row.funding = Number(data.r) * 100;
+        row.nextFundingTime = data.T;
+      } else {
+        return;
+      }
+
+      recalc(row);
+      lastTickAt = Date.now();
+      scheduleRender();
+    }
+
+    function disconnectLive() {
+      socketToken++;
+      clearTimeout(reconnectTimer);
+      if (socket) {
+        socket.onclose = null;
+        socket.close();
+        socket = null;
+      }
+    }
+
+    function connectLive() {
+      disconnectLive();
+      const contracts = liveRows
+        .filter(row => row.status === 'OK')
+        .map(row => row.contract.toLowerCase());
+      if (!contracts.length) {
+        setLiveState('off');
+        return;
+      }
+
+      const streams = contracts
+        .flatMap(contract => [`${contract}@aggTrade`, `${contract}@ticker`, `${contract}@markPrice@1s`])
+        .join('/');
+      const token = socketToken;
+      setLiveState(liveState === 'retry' ? 'retry' : 'connecting');
+      socket = new WebSocket(`${WS_BASE}?streams=${streams}`);
+      socket.onopen = () => {
+        reconnectDelay = 1000;
+        setLiveState('live');
+      };
+      socket.onmessage = event => {
+        try {
+          handleLiveMessage(JSON.parse(event.data));
+        } catch {}
+      };
+      socket.onerror = () => socket?.close();
+      socket.onclose = () => {
+        if (token !== socketToken) return;
+        setLiveState('retry');
+        reconnectTimer = setTimeout(connectLive, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+      };
+    }
+
+    // OI và giá mốc 1h/7d không có trên stream, cập nhật lại định kỳ qua REST.
+    async function refreshReferences() {
+      await Promise.all(liveRows
+        .filter(row => row.status === 'OK')
+        .map(async row => {
+          const references = await fetchReferences(row.contract);
+          Object.entries(references).forEach(([key, value]) => {
+            if (value !== null) row[key] = value;
+          });
+          recalc(row);
+        }));
+      scheduleRender();
+    }
+
+    function scheduleRender() {
+      if (renderTimer) return;
+      renderTimer = setTimeout(() => {
+        renderTimer = null;
+        renderAll();
+      }, RENDER_INTERVAL);
+    }
+
+    function renderAll() {
+      const rows = enrichRows(liveRows);
+      renderRows(rows);
+      renderSummary(rows);
     }
 
     function getMetricValue(row, metric) {
@@ -961,7 +1180,9 @@ ETH</textarea>
         change24h: row.percent24h,
         change7d: row.percent7d,
         volume: row.volume24h,
-        marketcap: row.marketCap
+        oi: row.openInterest,
+        marketcap: row.openInterest,
+        funding: row.funding
       };
       return values[metric];
     }
@@ -988,15 +1209,15 @@ ETH</textarea>
       if (row.percent1h !== null && Math.abs(row.percent1h) >= 3) {
         alerts.push(`Fast 1h move ${number(row.percent1h, { maximumFractionDigits: 2 })}%`);
       }
-      if (row.marketCap && row.volume24h && row.volume24h / row.marketCap >= 0.2) {
-        alerts.push(`High turnover ${number((row.volume24h / row.marketCap) * 100, { maximumFractionDigits: 1 })}%`);
+      if (row.funding !== null && Math.abs(row.funding) >= 0.05) {
+        alerts.push(`Funding cao ${number(row.funding, { maximumFractionDigits: 4 })}%`);
       }
       return alerts;
     }
 
     function customAlerts(row, rules) {
       return rules
-        .filter(rule => rule.symbol === row.symbol)
+        .filter(rule => rule.symbol === row.symbol || rule.symbol === row.contract)
         .filter(rule => compare(getMetricValue(row, rule.metric), rule.operator, rule.target))
         .map(rule => `Rule: ${rule.source}`);
     }
@@ -1016,14 +1237,14 @@ ETH</textarea>
     function renderHeatmap(rows) {
       const okRows = rows
         .filter(row => row.status === 'OK')
-        .sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
+        .sort((a, b) => (b.openInterest || 0) - (a.openInterest || 0));
 
       if (!okRows.length) {
-        heatmapEl.innerHTML = '<div class="heat-empty">Chưa có dữ liệu thị trường.</div>';
+        setHtmlIfChanged(heatmapEl, '<div class="heat-empty">Chưa có dữ liệu thị trường.</div>');
         return;
       }
 
-      heatmapEl.innerHTML = okRows.map(row => {
+      setHtmlIfChanged(heatmapEl, okRows.map(row => {
         const change = Number(row.percent24h || 0);
         const intensity = Math.min(Math.abs(change), 10) / 10;
         const hue = change >= 0 ? 146 : 9;
@@ -1033,10 +1254,18 @@ ETH</textarea>
           <div class="heat-tile" style="background:${background}">
             <strong>${escapeHtml(row.symbol)}</strong>
             <span>${change >= 0 ? '+' : ''}${number(change, { maximumFractionDigits: 2 })}% 24h</span>
-            <span>${row.price === null ? '' : money(row.price, convertEl.value.trim().toUpperCase() || 'USD')}</span>
+            <span>${row.price === null ? '' : money(row.price)}</span>
           </div>
         `;
-      }).join('');
+      }).join(''));
+    }
+
+    // Tránh vẽ lại DOM (và reset scroll) khi nội dung không đổi.
+    function setHtmlIfChanged(element, html) {
+      if (element.dataset.html === html) return false;
+      element.dataset.html = html;
+      element.innerHTML = html;
+      return true;
     }
 
     function renderMood(rows) {
@@ -1061,28 +1290,37 @@ ETH</textarea>
     function renderAlerts(rows) {
       const alerts = rows.flatMap(row => row.alerts.map(alert => `${row.symbol}: ${alert}`));
       activeAlertsEl.textContent = String(alerts.length);
-      alertListEl.innerHTML = alerts.length
+      const changed = setHtmlIfChanged(alertListEl, alerts.length
         ? alerts.slice(0, 8).map(alert => `<span class="alert-chip">${escapeHtml(alert)}</span>`).join('')
-        : 'Chưa có alert nào.';
-      alertListEl.scrollTop = 0;
+        : 'Chưa có alert nào.');
+      if (changed) alertListEl.scrollTop = 0;
     }
 
-    function renderRows(rows, convert) {
+    function tickClass(row) {
+      const previous = renderedPrices.get(row.symbol);
+      renderedPrices.set(row.symbol, row.price);
+      if (previous === undefined || previous === null || row.price === null || previous === row.price) return '';
+      return row.price > previous ? 'tick-up' : 'tick-down';
+    }
+
+    function renderRows(rows) {
       if (!rows.length) {
-        rowsEl.innerHTML = '<tr><td class="empty" colspan="12">Danh sách Coins đang trống.</td></tr>';
+        rowsEl.innerHTML = '<tr><td class="empty" colspan="14">Danh sách Coins đang trống.</td></tr>';
         return;
       }
 
       rowsEl.innerHTML = rows.map(row => `
         <tr class="${row.alerts?.length ? 'alert-row' : ''}">
           <td data-label="Symbol"><strong>${escapeHtml(row.symbol)}</strong></td>
-          <td data-label="Name">${escapeHtml(row.name)}</td>
-          <td data-label="Price" class="num">${row.price === null ? '' : money(row.price, convert)}</td>
-          <td data-label="Market Cap" class="num">${row.marketCap === null ? '' : money(row.marketCap, convert)}</td>
-          <td data-label="Volume 24h" class="num">${row.volume24h === null ? '' : money(row.volume24h, convert)}</td>
-          <td data-label="Change 1h" class="num">${percent(row.percent1h)}</td>
-          <td data-label="Change 24h" class="num">${percent(row.percent24h)}</td>
-          <td data-label="Change 7d" class="num">${percent(row.percent7d)}</td>
+          <td data-label="Contract">${escapeHtml(row.contract)}</td>
+          <td data-label="Price" class="num ${tickClass(row)}">${row.price === null ? '' : money(row.price)}</td>
+          <td data-label="Mark Price" class="num">${row.markPrice === null ? '' : money(row.markPrice)}</td>
+          <td data-label="Funding" class="num" title="${row.nextFundingTime ? `Next funding: ${escapeHtml(dateTime(row.nextFundingTime))}` : ''}">${percent(row.funding)}</td>
+          <td data-label="Open Interest" class="num">${row.openInterest === null ? '' : money(row.openInterest)}</td>
+          <td data-label="Volume 24h" class="num">${row.volume24h === null ? '' : money(row.volume24h)}</td>
+          <td data-label="Change 1h" class="num">${percent(row.percent1h, 2)}</td>
+          <td data-label="Change 24h" class="num">${percent(row.percent24h, 2)}</td>
+          <td data-label="Change 7d" class="num">${percent(row.percent7d, 2)}</td>
           <td data-label="Last Updated">${escapeHtml(dateTime(row.lastUpdated))}</td>
           <td data-label="Status"><span class="badge ${row.status === 'Error' ? 'error' : ''}">${escapeHtml(row.status)}</span></td>
           <td data-label="Alerts">${row.alerts?.length ? `<span class="badge warn">${row.alerts.length}</span>` : ''}</td>
@@ -1091,10 +1329,12 @@ ETH</textarea>
       `).join('');
     }
 
-    function renderSummary(rows, convert) {
+    function renderSummary(rows) {
       okCountEl.textContent = String(rows.filter(row => row.status === 'OK').length);
       errorCountEl.textContent = String(rows.filter(row => row.status === 'Error').length);
-      lastUpdatedEl.textContent = `Refresh lúc ${new Date().toLocaleString()}`;
+      lastUpdatedEl.textContent = lastTickAt
+        ? `Tick mới nhất ${new Date(lastTickAt).toLocaleTimeString()}`
+        : `Refresh lúc ${new Date().toLocaleString()}`;
       renderMood(rows);
       renderHeatmap(rows);
       renderAlerts(rows);
@@ -1104,64 +1344,56 @@ ETH</textarea>
       event?.preventDefault();
       saveSettings();
 
-      const settings = {
-        apiKey: proxyRequiresKey ? apiKeyEl.value.trim() : '',
-        convert: convertEl.value.trim().toUpperCase() || 'USD',
-        apiUrl: apiUrlEl.value.trim() || defaultSettings.apiUrl
-      };
+      const quote = getQuote();
       const symbols = parseSymbols();
       updateCoinCount();
 
-      if (!settings.apiUrl) {
-        stopTitleTicker();
-        statusLineEl.textContent = 'Thiếu CMC_PROXY_URL cho bản GitHub Pages.';
-        return;
-      }
-
-      if (proxyRequiresKey && !settings.apiKey) {
-        stopTitleTicker();
-        statusLineEl.textContent = 'Thiếu API_KEY.';
-        apiKeyEl.focus();
-        return;
-      }
+      disconnectLive();
+      clearInterval(referenceTimer);
+      clearTimeout(renderTimer);
+      renderTimer = null;
+      lastTickAt = null;
+      renderedPrices.clear();
 
       if (!symbols.length) {
+        liveRows = [];
         stopTitleTicker();
-        renderRows([], settings.convert);
-        renderSummary([], settings.convert);
+        setLiveState('off');
+        renderRows([]);
+        renderSummary([]);
         return;
       }
 
       refreshButton.disabled = true;
       stopTitleTicker('Loading prices...');
       statusLineEl.textContent = `Đang tải ${symbols.length} symbol...`;
-      rowsEl.innerHTML = '<tr><td class="empty" colspan="12">Đang tải dữ liệu từ CoinMarketCap...</td></tr>';
+      rowsEl.innerHTML = '<tr><td class="empty" colspan="14">Đang tải dữ liệu từ Binance Futures...</td></tr>';
 
-      const rows = enrichRows(await Promise.all(symbols.map(symbol => fetchSymbol(symbol, settings))));
-      renderRows(rows, settings.convert);
-      renderSummary(rows, settings.convert);
-      startTitleTicker(rows, settings.convert);
-      statusLineEl.textContent = rows.some(row => row.status === 'Error')
-        ? 'Hoàn tất, có symbol lỗi.'
-        : 'Hoàn tất.';
+      try {
+        liveRows = await fetchAll(symbols, quote);
+      } catch (error) {
+        liveRows = symbols.map(symbol => errorRow(symbol, `Không gọi được Binance API: ${error.message || error}`));
+      }
+
+      renderAll();
+      startTitleTicker();
+      connectLive();
+      referenceTimer = setInterval(refreshReferences, REFERENCE_INTERVAL);
       refreshButton.disabled = false;
     }
 
     form.addEventListener('submit', refreshPrices);
     symbolsEl.addEventListener('input', updateCoinCount);
     clearButton.addEventListener('click', () => {
-      localStorage.removeItem(STORAGE_KEY);
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch {}
       loadSettings();
       statusLineEl.textContent = 'Đã xóa thiết lập đã lưu.';
     });
 
     loadSettings();
-    document.querySelector('#runtimeNotice').textContent = proxyUrl
-      ? 'Đang dùng proxy serverless đã cấu hình cho bản deploy.'
-      : isLocalProxy
-        ? 'Đang dùng proxy local tại /api/quotes.'
-        : 'Bản GitHub Pages cần cấu hình CMC_PROXY_URL hoặc chạy qua proxy local.';
-    if ((!proxyRequiresKey || apiKeyEl.value.trim()) && parseSymbols().length > 0) {
+    if (parseSymbols().length > 0) {
       statusLineEl.textContent = 'Đang tự refresh prices...';
       refreshPrices();
     }
